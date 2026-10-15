@@ -1,0 +1,14 @@
+[Unit]
+Description=LLM appliance device and model manager (axbox)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/axbox/bin/axbox-manager -c /etc/axbox/config.json
+Restart=always
+RestartSec=3
+# 只结束管理服务本身：模型进程继续运行，管理服务重启后自动接管
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
