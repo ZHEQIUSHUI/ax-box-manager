@@ -173,3 +173,7 @@ EOF
 - 网络、时间设置
 - 模型在线下载（后续在 Release 维护 `models.json` 清单）
 - PAM 登录
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。
