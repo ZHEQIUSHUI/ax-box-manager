@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <algorithm>
 #include <cstring>
 #include <regex>
 #include <sstream>
@@ -138,6 +139,16 @@ std::optional<int> read_fan_rpm() {
     return std::nullopt;
 }
 
+const char* kNpuEnable = "/proc/ax_proc/npu/enable";
+
+bool write_npu_enable(bool on) {
+    FILE* f = fopen(kNpuEnable, "w");
+    if (!f) return false;
+    bool ok = fputs(on ? "1\n" : "0\n", f) >= 0;  // 驱动要求带换行
+    ok = (fclose(f) == 0) && ok;
+    return ok;
+}
+
 }  // namespace
 
 CmmInfo read_cmm() {
@@ -171,17 +182,6 @@ SysInfo::SysInfo(const Config& config, int interval_ms, size_t history_len)
 SysInfo::~SysInfo() { stop(); }
 
 void SysInfo::start() {
-    if (config_.npu_top && path_exists("/proc/ax_proc/npu/enable")) {
-        if (read_trimmed("/proc/ax_proc/npu/enable") != "1") {
-            FILE* f = fopen("/proc/ax_proc/npu/enable", "w");
-            if (f) {
-                fputs("1\n", f);  // 驱动要求带换行
-                fclose(f);
-            }
-        }
-        npu_top_enabled_ = read_trimmed("/proc/ax_proc/npu/enable") == "1";
-    }
-
     // 设备信息
     nlohmann::json d;
     char host[256] = {0};
@@ -221,7 +221,7 @@ void SysInfo::start() {
     d["mem_total_kb"] = mem.total_kb;
     auto cmm = read_cmm();
     d["cmm_total_kb"] = cmm.valid ? nlohmann::json(cmm.total_kb) : nlohmann::json(nullptr);
-    d["npu_util_available"] = npu_top_enabled_;
+    d["npu_util_available"] = path_exists(kNpuEnable);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         device_ = d;
@@ -233,6 +233,13 @@ void SysInfo::start() {
 }
 
 void SysInfo::stop() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (npu_top_by_us_) {
+            write_npu_enable(false);
+            npu_top_by_us_ = false;
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(stop_mutex_);
         stop_ = true;
@@ -270,7 +277,7 @@ nlohmann::json SysInfo::sample() {
         s["cmm_total_kb"] = cmm.total_kb;
         s["cmm_used_kb"] = cmm.used_kb;
     }
-    if (npu_top_enabled_) {
+    if (read_trimmed(kNpuEnable) == "1") {
         if (auto u = read_npu_util()) s["npu"] = *u;
     }
     auto temps = read_temperatures();
@@ -294,8 +301,60 @@ nlohmann::json SysInfo::sample() {
     return s;
 }
 
+nlohmann::json SysInfo::npu_top() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool available = path_exists(kNpuEnable);
+    const bool enabled = available && read_trimmed(kNpuEnable) == "1";
+    nlohmann::json j = {{"available", available}, {"enabled", enabled}, {"by_us", npu_top_by_us_ && enabled}};
+    if (npu_top_by_us_ && enabled) {
+        j["auto_off_in_s"] = std::max<int64_t>(0, (npu_top_until_ms_ - now_ms()) / 1000);
+    }
+    return j;
+}
+
+std::string SysInfo::set_npu_top(bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!path_exists(kNpuEnable)) return "NPU statistics are not available on this device";
+    const bool on = read_trimmed(kNpuEnable) == "1";
+    if (enabled) {
+        if (!on) {
+            if (!write_npu_enable(true)) return std::string("cannot enable NPU statistics: ") + strerror(errno);
+            npu_top_by_us_ = true;
+            log_info("NPU statistics enabled from the web console");
+        }
+        // 已经由别人打开时不接管，不会自动关掉
+        if (npu_top_by_us_) npu_top_until_ms_ = now_ms() + int64_t(config_.npu_top_minutes) * 60 * 1000;
+        last_view_ms_ = now_ms();
+    } else if (on) {
+        if (!write_npu_enable(false)) return std::string("cannot disable NPU statistics: ") + strerror(errno);
+        npu_top_by_us_ = false;
+        log_info("NPU statistics disabled from the web console");
+    }
+    return "";
+}
+
+void SysInfo::touch() { last_view_ms_ = now_ms(); }
+
+void SysInfo::npu_top_check() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!npu_top_by_us_) return;
+    if (read_trimmed(kNpuEnable) != "1") {  // 被别人关掉了
+        npu_top_by_us_ = false;
+        return;
+    }
+    const int64_t now = now_ms();
+    const bool expired = now >= npu_top_until_ms_;
+    const bool unwatched = now - last_view_ms_ > 60 * 1000;
+    if (expired || unwatched) {
+        write_npu_enable(false);
+        npu_top_by_us_ = false;
+        log_info(std::string("NPU statistics turned off automatically (") + (expired ? "time limit" : "nobody watching") + ")");
+    }
+}
+
 void SysInfo::loop() {
     for (;;) {
+        npu_top_check();
         auto s = sample();
         {
             std::lock_guard<std::mutex> lock(mutex_);

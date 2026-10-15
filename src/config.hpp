@@ -43,7 +43,9 @@ struct Config {
     std::vector<std::string> allowed_groups;      // 组内成员也允许登录
     int session_ttl_s = 12 * 3600;
 
-    bool npu_top = true;            // 启动时打开 /proc/ax_proc/npu/enable 以读取 NPU 利用率
+    // NPU 利用率统计（/proc/ax_proc/npu/enable）默认关闭，网页上临时开启；
+    // 开启后超过这个时间、或者 1 分钟没人查看状态时自动关闭
+    int npu_top_minutes = 10;
 
     static Config load(const std::string& path, std::string* error);
     nlohmann::json to_json() const;

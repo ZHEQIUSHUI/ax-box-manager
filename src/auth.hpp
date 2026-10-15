@@ -31,7 +31,11 @@ public:
 
     bool enabled() const { return config_.auth_mode != "none"; }
 
+    // 会话保存在 data_dir/sessions.json（只存令牌的 sha256），设备或服务重启后不用重新登录
+    void load_sessions();
+
 private:
+    void save_sessions();  // 调用方持有 mutex_
     bool verify_password(const std::string& user, const std::string& password, std::string* error);
     bool user_allowed(const std::string& user) const;
 
@@ -48,7 +52,7 @@ private:
     };
 
     std::mutex mutex_;
-    std::map<std::string, Session> sessions_;
+    std::map<std::string, Session> sessions_;  // key: sha256(令牌)
     std::map<std::string, Failures> failures_;  // key: user@ip
     std::mutex crypt_mutex_;
 };

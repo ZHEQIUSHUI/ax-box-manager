@@ -40,7 +40,11 @@ const I18N = {
     'ov.cpu': 'CPU',
     'ov.mem': '系统内存',
     'ov.npu': 'NPU 利用率',
-    'ov.npu_na': '未开启',
+    'ov.npu_na': '已关闭',
+    'ov.npu_switch': '临时开启 NPU 利用率统计',
+    'ov.npu_off_hint': '统计默认关闭，打开后会自动关闭',
+    'ov.npu_auto_off': '{m} 分钟后自动关闭',
+    'ov.npu_external': '已由其他程序开启',
     'ov.temp': '芯片温度',
     'ov.disk': '模型存储',
     'ov.disk_free': '剩余 {v}',
@@ -183,8 +187,10 @@ const I18N = {
     'set.reboot_desc': '先正常停止所有模型，再重启系统。开机启动的模型会在重启后自动运行。',
     'set.reboot_confirm': '重启设备？',
     'set.reboot_text': '重启期间 API 不可用，大约需要一到几分钟。',
-    'set.rebooting': '设备正在重启，稍后刷新页面。',
+    'set.rebooting': '设备正在重启。',
     'err.network': '无法连接设备',
+    'conn.lost': '与设备的连接已断开，正在重连…',
+    'conn.rebooting': '设备正在重启，恢复后页面会自动刷新…',
   },
   en: {
     'login.title': 'Sign in to device console',
@@ -225,6 +231,10 @@ const I18N = {
     'ov.mem': 'System memory',
     'ov.npu': 'NPU utilization',
     'ov.npu_na': 'Off',
+    'ov.npu_switch': 'Turn on NPU utilization statistics for a while',
+    'ov.npu_off_hint': 'Off by default; turns itself off later',
+    'ov.npu_auto_off': 'turns off in {m} min',
+    'ov.npu_external': 'turned on by another program',
     'ov.temp': 'Chip temperature',
     'ov.disk': 'Model storage',
     'ov.disk_free': '{v} free',
@@ -367,8 +377,10 @@ const I18N = {
     'set.reboot_desc': 'Stops all models cleanly, then reboots. Models set to start on boot run again afterwards.',
     'set.reboot_confirm': 'Reboot the device?',
     'set.reboot_text': 'The API is unavailable while the device restarts, usually one to a few minutes.',
-    'set.rebooting': 'The device is rebooting. Refresh this page in a while.',
+    'set.rebooting': 'The device is rebooting.',
     'err.network': 'Cannot reach the device',
+    'conn.lost': 'Lost connection to the device. Reconnecting…',
+    'conn.rebooting': 'The device is rebooting. This page refreshes when it is back…',
   },
 };
 
@@ -399,7 +411,7 @@ function applyI18n(root = document) {
       b.type = 'button';
       b.textContent = label;
       b.setAttribute('aria-pressed', String(code === lang));
-      b.onclick = () => { lang = code; store('axbox.lang', code); applyI18n(); render(); };
+      b.onclick = () => { lang = code; store('axbox.lang', code); applyI18n(); render(); showConn(); };
       seg.appendChild(b);
     }
   });
@@ -507,8 +519,10 @@ async function api(method, path, body) {
   try {
     res = await fetch(path, opts);
   } catch (e) {
+    setOnline(false);
     throw new ApiError(0, { error: { message: t('err.network') } });
   }
+  setOnline(true);
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
@@ -518,6 +532,43 @@ async function api(method, path, body) {
   }
   if (!res.ok) throw new ApiError(res.status, data);
   return data;
+}
+
+// ============================================================ 连接状态
+// 断线时显示提示并继续轮询；设备重启时等它先断开再恢复，然后整页刷新
+const conn = { online: true, rebooting: false, sawDown: false };
+
+function showConn() {
+  const el = $('#conn');
+  if (!el) return;
+  const msg = conn.rebooting ? t('conn.rebooting') : !conn.online ? t('conn.lost') : '';
+  el.hidden = !msg;
+  if (msg) el.innerHTML = `<span class="led"></span><span>${esc(msg)}</span>`;
+}
+
+function setOnline(online) {
+  if (!online) conn.sawDown = true;
+  if (conn.online === online) return;
+  conn.online = online;
+  showConn();
+}
+
+async function waitForReboot() {
+  conn.rebooting = true;
+  conn.sawDown = false;
+  showConn();
+  stopPolling();
+  const started = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 3000));
+    try {
+      const res = await fetch('/api/info', { cache: 'no-store', credentials: 'same-origin' });
+      // 设备还没真正开始重启时请求仍会成功，等它断开过一次再算恢复
+      if (res.ok && (conn.sawDown || Date.now() - started > 10 * 60 * 1000)) return location.reload();
+    } catch (e) {
+      conn.sawDown = true;
+    }
+  }
 }
 
 // ============================================================ 状态
@@ -594,6 +645,7 @@ async function refreshStatus() {
   const d = await api('GET', '/api/status?since=' + since);
   S.now = d.now || {};
   S.gateway = d.gateway || {};
+  S.npuTop = d.npu_top || {};
   S.history = S.history.concat(d.history || []);
   const cutoff = Date.now() - 10 * 60 * 1000;
   S.history = S.history.filter((p) => p.t >= cutoff);
@@ -609,6 +661,8 @@ async function refreshModels(rescan) {
 async function tick() {
   const p = page();
   try {
+    // 没有数据要刷新的页面也探测一下连接
+    if (!['overview', 'models', 'logs'].includes(p)) await api('GET', '/api/info');
     if (p === 'overview') await Promise.all([refreshStatus(), refreshModels()]);
     else if (p === 'models') await refreshModels();
     else if (p === 'logs' && S.log.auto) await loadLog();
@@ -643,8 +697,9 @@ function series(fn) {
 }
 
 function metric(label, value, unit, extra, points, max, na) {
+  const extraHtml = extra && extra.html != null ? extra.html : esc(extra || '');
   return `<div class="metric${na ? ' na' : ''}">
-    <div class="label"><span>${esc(label)}</span><span>${esc(extra || '')}</span></div>
+    <div class="label"><span>${esc(label)}</span><span>${extraHtml}</span></div>
     <div class="value">${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ''}</div>
     ${points ? sparkline(points, max) : '<svg viewBox="0 0 100 40"></svg>'}
   </div>`;
@@ -700,12 +755,20 @@ function renderOverview() {
   const n = S.now, d = S.device || {};
   const memPct = n.mem_total_kb ? (n.mem_used_kb / n.mem_total_kb) * 100 : null;
   const diskUsedPct = n.disk_total_kb ? (1 - n.disk_free_kb / n.disk_total_kb) * 100 : null;
-  const npuNa = n.npu == null;
+  const npuTop = S.npuTop || {};
+  const npuNa = !npuTop.enabled || n.npu == null;
+  const npuNote = !npuTop.available ? '' : !npuTop.enabled ? t('ov.npu_off_hint')
+    : npuTop.by_us ? t('ov.npu_auto_off', { m: Math.max(1, Math.ceil((npuTop.auto_off_in_s || 0) / 60)) }) : t('ov.npu_external');
+  const npuSwitch = npuTop.available
+    ? { html: `<label class="switch" title="${esc(t('ov.npu_switch'))}"><input type="checkbox" id="npu-top" ${npuTop.enabled ? 'checked' : ''} aria-label="${esc(t('ov.npu_switch'))}"></label>` }
+    : '';
   const metrics = [
     metric(t('ov.cpu'), n.cpu != null ? n.cpu.toFixed(0) : '–', '%', d.cpu_cores ? `${d.cpu_cores} cores` : '', series((p) => p.cpu), 100),
     metric(t('ov.mem'), memPct != null ? memPct.toFixed(0) : '–', '%', n.mem_total_kb ? `${fmtKB(n.mem_used_kb)} / ${fmtKB(n.mem_total_kb)}` : '',
       series((p) => (p.mem_total_kb ? (p.mem_used_kb / p.mem_total_kb) * 100 : null)), 100),
-    metric(t('ov.npu'), npuNa ? t('ov.npu_na') : n.npu.toFixed(0), npuNa ? '' : '%', '', npuNa ? null : series((p) => p.npu), 100, npuNa),
+    metric(t('ov.npu'), npuNa ? t('ov.npu_na') : n.npu.toFixed(0), npuNa ? '' : '%', npuSwitch, npuNa ? null : series((p) => p.npu), 100, npuNa)
+      .replace('</div>\n    <div class="value">', `</div>\n    <div class="value">`)
+      .replace(/<svg[^]*<\/svg>/, (svg) => (npuNote ? `<div class="metric-note">${esc(npuNote)}</div>` : '') + (npuNa ? '' : svg)),
     metric(t('ov.temp'), n.temp != null ? n.temp.toFixed(1) : '–', '°C', n.fan_rpm != null ? `${n.fan_rpm} rpm` : '', series((p) => p.temp), 110),
     metric(t('ov.disk'), diskUsedPct != null ? diskUsedPct.toFixed(0) : '–', '%', n.disk_free_kb != null ? t('ov.disk_free', { v: fmtKB(n.disk_free_kb) }) : '', null, 100),
     metric(t('ov.uptime'), fmtDuration(n.uptime_s), '', n.load1 != null ? t('ov.load', { v: n.load1.toFixed(2) }) : '', null, 1),
@@ -764,6 +827,16 @@ function renderOverview() {
       </section>
     </div>`;
   $('#copy-gw').onclick = () => copyText(gatewayUrl());
+  const npuEl = $('#npu-top');
+  if (npuEl) {
+    npuEl.onchange = async () => {
+      try {
+        S.npuTop = await api('PUT', '/api/npu-top', { enabled: npuEl.checked });
+        await refreshStatus();
+        render();
+      } catch (e) { toast(e.message, true); npuEl.checked = !npuEl.checked; }
+    };
+  }
 }
 
 // ============================================================ 页面：模型
@@ -1212,13 +1285,14 @@ async function loadLog() {
   if (!pre) return;
   try {
     const res = await fetch(`/api/logs/${encodeURIComponent(S.log.target)}?lines=${S.log.lines}`, { credentials: 'same-origin' });
+    setOnline(true);
     if (res.status === 401) return showLogin();
     // 进度条用 \r 原地刷新：和终端一样，每行只保留最后一次刷新的内容
     const text = (await res.text()).split('\n').map((l) => l.split('\r').filter((x) => x.trim()).pop() || '').join('\n');
     const stick = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
     pre.textContent = text || t('log.empty');
     if (stick) pre.scrollTop = pre.scrollHeight;
-  } catch (e) { /* 下次再试 */ }
+  } catch (e) { setOnline(false); }
 }
 
 function renderLogs() {
@@ -1321,7 +1395,11 @@ function renderSettings() {
   });
   $('#reboot').onclick = async () => {
     if (!(await confirmDialog(t('set.reboot_confirm'), t('set.reboot_text'), t('set.reboot'), true))) return;
-    try { await api('POST', '/api/system/reboot'); toast(t('set.rebooting')); } catch (e) { toast(e.message, true); }
+    try {
+      await api('POST', '/api/system/reboot');
+      toast(t('set.rebooting'));
+      waitForReboot();
+    } catch (e) { toast(e.message, true); }
   };
 }
 

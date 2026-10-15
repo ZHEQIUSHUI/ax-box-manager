@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <grp.h>
 #include <pwd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -45,6 +46,30 @@ bool equal_ct(const std::string& a, const std::string& b) {
 }  // namespace
 
 Auth::Auth(const Config& config) : config_(config) {}
+
+static std::string sessions_path(const Config& c) { return join_path(c.data_dir, "sessions.json"); }
+
+void Auth::load_sessions() {
+    auto text = read_file(sessions_path(config_));
+    if (!text) return;
+    auto j = nlohmann::json::parse(*text, nullptr, false);
+    if (!j.is_object()) return;
+    const int64_t now = now_unix();
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        const auto& v = it.value();
+        if (!v.is_object()) continue;
+        Session s{v.value("user", ""), v.value("expires_at", int64_t(0))};
+        if (s.expires_at > now && !s.user.empty()) sessions_[it.key()] = s;
+    }
+}
+
+void Auth::save_sessions() {
+    nlohmann::json j = nlohmann::json::object();
+    for (const auto& kv : sessions_) j[kv.first] = {{"user", kv.second.user}, {"expires_at", kv.second.expires_at}};
+    const std::string path = sessions_path(config_);
+    if (write_file_atomic(path, j.dump())) chmod(path.c_str(), 0600);
+}
 
 bool Auth::user_allowed(const std::string& user) const {
     if (std::find(config_.allowed_users.begin(), config_.allowed_users.end(), user) != config_.allowed_users.end()) {
@@ -143,23 +168,25 @@ Auth::Result Auth::login(const std::string& user, const std::string& password, c
         it = it->second.expires_at <= now ? sessions_.erase(it) : std::next(it);
     }
     *token = random_hex(32);
-    sessions_[*token] = Session{user, now + config_.session_ttl_s};
+    sessions_[sha256_hex(*token)] = Session{user, now + config_.session_ttl_s};
+    save_sessions();
     log_info("login: " + user + " from " + client_ip);
     return Result::Ok;
 }
 
 void Auth::logout(const std::string& token) {
     std::lock_guard<std::mutex> lock(mutex_);
-    sessions_.erase(token);
+    if (sessions_.erase(sha256_hex(token))) save_sessions();
 }
 
 std::optional<std::string> Auth::check(const std::string& token) {
     if (token.empty()) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = sessions_.find(token);
+    auto it = sessions_.find(sha256_hex(token));
     if (it == sessions_.end()) return std::nullopt;
     if (it->second.expires_at <= now_unix()) {
         sessions_.erase(it);
+        save_sessions();
         return std::nullopt;
     }
     return it->second.user;

@@ -7,7 +7,7 @@
 ## 功能
 
 - **登录**：使用设备的系统账号密码（读 `/etc/shadow`，用系统 `crypt()` 校验，支持 yescrypt / sha512）。不提供修改密码；连续失败 5 次锁定 5 分钟。
-- **概览**：芯片、系统、SDK、运行时版本；CPU、内存、NPU 内存（按模型分段显示）、NPU 利用率、温度、存储的实时数据和 10 分钟曲线；运行中模型的最近一次调用（token 占用 / 最大上下文、首字延迟、生成速度）。
+- **概览**：芯片、系统、SDK、运行时版本；CPU、内存、NPU 内存（按模型分段显示）、NPU 利用率（默认关闭，开关临时开启，到时自动关闭）、温度、存储的实时数据和 10 分钟曲线；运行中模型的最近一次调用（token 占用 / 最大上下文、首字延迟、生成速度）。
 - **模型**：扫描模型仓库；启动、停止、重启；开机启动；启动前检查内存；导入模型包（上传、解压、校验 sha256、同名覆盖确认）；校验文件；删除。
 - **统一网关**：基于 [openai-api.cpp](https://github.com/ZHEQIUSHUI/openai-api.cpp) 的 `openai_api_gateway`，一个端口按 `model` 字段把请求原样转发给各模型进程（流式、图片、`tool_calls` 等字段都不改写）；可选 API Key。
 - **对话测试**：选择运行中的模型直接对话，可调 system prompt、temperature、top_p、max_tokens、思考模式，支持图片；生成 curl / Python 调用示例。设置只在当前页面生效。
@@ -109,7 +109,7 @@ sh install.sh --models-dir /data/models     # 首次安装生成 /etc/axbox/conf
 | `auth_mode` | `system` | `none` 表示不校验登录，仅用于开发 |
 | `allowed_users` / `allowed_groups` | `["root"]` / `[]` | 允许登录网页的账号和组 |
 | `session_ttl_s` | `43200` | 登录有效期 |
-| `npu_top` | `true` | 启动时打开 `/proc/ax_proc/npu/enable` 以读取 NPU 利用率 |
+| `npu_top_minutes` | `10` | NPU 利用率统计默认关闭，在概览页临时开启；开启超过这个时间、或 1 分钟没人查看时自动关闭 |
 | `web_dir` | 空 | 非空时从该目录读取网页（前端开发用），否则用内置网页 |
 
 ## 接口
@@ -120,7 +120,8 @@ sh install.sh --models-dir /data/models     # 首次安装生成 /etc/axbox/conf
 |---|---|
 | `POST /api/login` `{user, password}` / `POST /api/logout` / `GET /api/info` | 登录 |
 | `GET /api/device` | 设备信息 |
-| `GET /api/status?since=<ms>` | 当前采样、历史曲线、网关状态 |
+| `GET /api/status?since=<ms>` | 当前采样、历史曲线、网关状态、NPU 统计开关状态 |
+| `PUT /api/npu-top` `{enabled}` | 临时开启 / 关闭 NPU 利用率统计 |
 | `GET /api/models[?rescan=1]` | 模型列表（含运行状态和网关调用统计） |
 | `POST /api/models/{name}/start\|stop\|restart` | 启停（异步，轮询模型列表看状态） |
 | `PUT /api/models/{name}/autostart` `{enabled}` | 开机启动 |

@@ -42,7 +42,7 @@ Config Config::load(const std::string& path, std::string* error) {
         get_if(j, "allowed_users", c.allowed_users);
         get_if(j, "allowed_groups", c.allowed_groups);
         get_if(j, "session_ttl_s", c.session_ttl_s);
-        get_if(j, "npu_top", c.npu_top);
+        get_if(j, "npu_top_minutes", c.npu_top_minutes);
     } catch (const std::exception& e) {
         if (error) *error = "invalid config file " + path + ": " + e.what();
     }
@@ -60,7 +60,7 @@ nlohmann::json Config::to_json() const {
         {"isolate_model_ports", isolate_model_ports}, {"start_timeout_s", start_timeout_s},
         {"stop_timeout_s", stop_timeout_s}, {"auth_mode", auth_mode},
         {"allowed_users", allowed_users},   {"allowed_groups", allowed_groups},
-        {"session_ttl_s", session_ttl_s},   {"npu_top", npu_top},
+        {"session_ttl_s", session_ttl_s},   {"npu_top_minutes", npu_top_minutes},
     };
 }
 

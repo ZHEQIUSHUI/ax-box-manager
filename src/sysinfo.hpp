@@ -44,6 +44,11 @@ public:
     nlohmann::json current() const;                  // 最近一次采样
     nlohmann::json history(int64_t since_ms) const;  // since_ms 之后的采样（unix 毫秒）
 
+    // NPU 利用率统计：临时开启，到时间或没人查看时自动关闭；只关闭自己打开的
+    nlohmann::json npu_top() const;
+    std::string set_npu_top(bool enabled);
+    void touch();  // 有人在查看状态
+
 private:
     nlohmann::json sample();
     void loop();
@@ -57,7 +62,10 @@ private:
     nlohmann::json device_;
 
     uint64_t prev_total_ = 0, prev_idle_ = 0;
-    bool npu_top_enabled_ = false;
+    void npu_top_check();
+    bool npu_top_by_us_ = false;
+    int64_t npu_top_until_ms_ = 0;
+    std::atomic<int64_t> last_view_ms_{0};
 
     std::mutex stop_mutex_;
     std::condition_variable stop_cv_;

@@ -109,6 +109,7 @@ int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
 
     Auth auth(config);
+    auth.load_sessions();
     ModelRepo repo(config);
     repo.scan();
     SysInfo sysinfo(config);
@@ -197,9 +198,17 @@ int main(int argc, char** argv) {
     server.Get("/api/status", [&](const httplib::Request& req, httplib::Response& res) {
         int64_t since = 0;
         if (req.has_param("since")) since = std::strtoll(req.get_param_value("since").c_str(), nullptr, 10);
+        sysinfo.touch();
         send_json(res, {{"now", sysinfo.current()},
                         {"history", sysinfo.history(since)},
-                        {"gateway", supervisor.gateway_status()}});
+                        {"gateway", supervisor.gateway_status()},
+                        {"npu_top", sysinfo.npu_top()}});
+    });
+
+    server.Put("/api/npu-top", [&](const httplib::Request& req, httplib::Response& res) {
+        auto err = sysinfo.set_npu_top(parse_body(req).value("enabled", false));
+        if (!err.empty()) return send_error(res, 409, err);
+        send_json(res, sysinfo.npu_top());
     });
 
     // ---------------------------------------------------------------- 模型
