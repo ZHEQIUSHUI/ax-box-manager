@@ -141,7 +141,7 @@ sh install.sh --models-dir /data/models     # 首次安装生成 /etc/axbox/conf
 - 网页必须登录；网关的 `/admin/upstreams` 只接受本机请求。
 - **模型端口**：`axllm serve` 目前固定监听 `0.0.0.0`，局域网可以绕过网关和 API Key 直接访问模型端口。平台默认用 `iptables -I INPUT -p tcp --dport 18001:19000 ! -i lo -j DROP` 拦截。根本的解决办法是让运行时支持只监听本机（如给 axllm 加 `--host 127.0.0.1`），之后可以在 `model.json` 的启动参数里指定，并关闭 `isolate_model_ports`。
 - API Key 保存在 `/var/lib/axbox/settings.json`（权限 600）。
-- 暂不支持 HTTPS。
+- 不做 HTTPS（需求确认不需要）。
 
 ## 开发
 
@@ -172,4 +172,4 @@ EOF
 - 平台和推理运行时的在线升级（需求第二期）
 - 网络、时间设置
 - 模型在线下载（后续在 Release 维护 `models.json` 清单）
-- HTTPS、PAM 登录
+- PAM 登录
